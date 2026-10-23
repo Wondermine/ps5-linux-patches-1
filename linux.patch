@@ -11926,3 +11926,65 @@ index 24015c73a67f..6c134508a759 100644
  	{ PCI_VDEVICE(ATI, 0x157a),
  	  .driver_data = AZX_DRIVER_ATIHDMI_NS | AZX_DCAPS_PRESET_ATI_HDMI_NS },
  	{ PCI_VDEVICE(ATI, 0x15b3),
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7921/pci.c b/drivers/net/wireless/mediatek/mt76/mt7921/pci.c
+index 56a914aaa..c3801f178 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7921/pci.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7921/pci.c
+@@ -36,6 +36,34 @@ static bool mt7921_disable_aspm;
+ module_param_named(disable_aspm, mt7921_disable_aspm, bool, 0644);
+ MODULE_PARM_DESC(disable_aspm, "disable PCI ASPM support");
+ 
++static int mt7921_disable_pm = -1;
++module_param_named(disable_pm, mt7921_disable_pm, int, 0444);
++MODULE_PARM_DESC(disable_pm,
++		 "runtime power save: -1 = auto (off on PS5, default), 0 = force on, 1 = force off");
++
++/*
++ * On the PS5 the Wi-Fi chip is function 7 of the Sony Salina multifunction
++ * endpoint. Handing the chip to its firmware (runtime power save) and taking
++ * it back again stalls every register access to that endpoint, which also
++ * kills the USB, SATA and Ethernet functions and finally hangs the machine.
++ * Recognise the layout by a Sony device at function 0 of the same slot.
++ */
++static bool mt7921_pci_is_sony_multifunction(struct pci_dev *pdev)
++{
++	unsigned int devfn = pci_ari_enabled(pdev->bus) ? 0 : (pdev->devfn & ~7U);
++	struct pci_dev *fn0;
++	bool ret;
++
++	fn0 = pci_get_slot(pdev->bus, devfn);
++	if (!fn0)
++		return false;
++
++	ret = fn0->vendor == PCI_VENDOR_ID_SONY;
++	pci_dev_put(fn0);
++
++	return ret;
++}
++
+ static int mt7921e_init_reset(struct mt792x_dev *dev)
+ {
+ 	return mt792x_wpdma_reset(dev, true);
+@@ -435,6 +463,22 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
+ 	if (ret)
+ 		goto err_free_irq;
+ 
++	if (mt7921_disable_pm > 0 ||
++	    (mt7921_disable_pm < 0 && mt7921_pci_is_sony_multifunction(pdev))) {
++		/*
++		 * mt7921_register_device() enabled power save. Undo that before
++		 * the idle timer can first fire, so the chip is never put into
++		 * firmware-own (low power) state.
++		 */
++		dev->pm.enable = false;
++		dev->pm.enable_user = false;
++		dev->pm.ds_enable = false;
++		dev->pm.ds_enable_user = false;
++		dev_info(&pdev->dev, "runtime power save disabled (%s)\n",
++			 mt7921_disable_pm > 0 ? "disable_pm=1" :
++			 "Sony multifunction endpoint");
++	}
++
+ 	if (of_property_read_bool(dev->mt76.dev->of_node, "wakeup-source"))
+ 		device_init_wakeup(dev->mt76.dev, true);
+ 
