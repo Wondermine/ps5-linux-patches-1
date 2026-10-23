@@ -7102,10 +7102,10 @@ index 000000000000..23a9e873ddb8
 +MODULE_ALIAS("platform:ps5-fan");
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
-index 000000000000..a4ace5c3b098
+index 000000000000..b8383d76fc13
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1269 @@
+@@ -0,0 +1,1295 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -7861,6 +7861,23 @@ index 000000000000..a4ace5c3b098
 +	i2c_exec();
 +}
 +
++/*
++ * 1920x1080 @ 75 Hz. There is no CEA-861 VIC for it, so drm_match_cea_mode()
++ * returns 0 and the VIC based paths do not know it. It reaches us as a CVT
++ * (220.75 MHz), CVT-RB (174.5 MHz) or CEA-blanking (185.6 MHz) timing, from
++ * the monitor's EDID or from video=...@75. All of them are far below the
++ * 340 MHz TMDS limit, so it takes the same non-scrambled path as 1080p60/120.
++ */
++static bool isMode1080p75(const struct drm_display_mode *mode)
++{
++	if (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN))
++		return false;
++
++	return mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
++	       drm_mode_vrefresh(mode) == 75 &&
++	       mode->clock >= 100000 && mode->clock <= 300000;
++}
++
 +static void mask_7203(void)
 +{
 +	i2c_init(1);
@@ -7890,6 +7907,10 @@ index 000000000000..a4ace5c3b098
 +		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){vic, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){vic, vic, 0x00, 0x00, 0x00, 0x00}, 6);
++	} else if (isMode1080p75(mode)) {
++		/* No CEA VIC: send "no VIC" instead of keeping the previous mode's */
++		i2c_write_data(0x7227, (u8[]){0x00, 0x00}, 2);
++		i2c_write_data(0x7070, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 6);
 +	} else if (mode->hdisplay == 2560 && mode->vdisplay == 1440) {
 +		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){0x04, 0x00}, 2);
@@ -8130,7 +8151,8 @@ index 000000000000..a4ace5c3b098
 +	i2c_begin_block();
 +	if (vic == 16) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0xef, 0x00, 0x28, 0x08, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
-+	} else if (mode->hdisplay == 2560 && mode->vdisplay == 1440) {
++	} else if ((mode->hdisplay == 2560 && mode->vdisplay == 1440) || isMode1080p75(mode)) {
++		/* AVI InfoFrame with VIC 0 (checksum 0xff): neither mode has a CEA VIC */
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0xff, 0x00, 0x28, 0x08, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	} else if (vic == 97) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0x9e, 0x00, 0x28, 0x08, 0x61, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
@@ -8315,7 +8337,11 @@ index 000000000000..a4ace5c3b098
 +	u8 vic = drm_match_cea_mode(mode);
 +
 +	if (force_1080p)
-+		return vic == 16; /* 1080p60 */
++		return vic == 16 || isMode1080p75(mode); /* 1080p60, 1080p75 */
++
++	/* 1080p75 */
++	if (isMode1080p75(mode))
++		return true;
 +
 +	/* 1440p */
 +	if (mode->hdisplay == 2560 && mode->vdisplay == 1440) {
